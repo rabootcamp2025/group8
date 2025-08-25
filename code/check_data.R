@@ -58,18 +58,16 @@ df_china_top40 <- df_china |>
   
 
 # 1990-2000
-df_china |> 
-  filter(yr == 1990) |> 
-  select(czone, city, d_tradeusch_pw, l_popcount) |> 
-  arrange(desc(l_popcount)) |> 
-  slice(1:40) |>
-  arrange(desc(d_tradeusch_pw))
+df_china_top40 |> 
+  filter(yr == 1990 & top40 == 1) |> 
+  select(city, d_tradeusch_pw) |>
+  arrange(desc(d_tradeusch_pw)) |>
+  print(n = 40)
 
 # App Table1 panel B
 # 2000-2007
-df_china |> 
-  filter(yr == 2000) |> 
-  select(czone, city, d_tradeusch_pw, l_popcount) |> 
-  arrange(desc(l_popcount)) |> 
-  slice(1:40) |>
-  arrange(desc(d_tradeusch_pw))
+df_china_top40 |> 
+  filter(yr == 2000 & top40 == 1) |> 
+  select(city, d_tradeusch_pw) |>
+  arrange(desc(d_tradeusch_pw)) |>
+  print(n = 40)
