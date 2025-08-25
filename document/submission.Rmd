@@ -4,26 +4,383 @@ output: html_document
 date: "2025-08-24"
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo =TRUE, message = FALSE, warning = FALSE)
 ```
 
-## R Markdown
+## Preprocess
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r}
+# パッケージ読み込み ---------------------------------------------------------------
+library(tidyverse)
+library(haven)
+library(modi)
+library(Hmisc)
+library(estimatr)
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+# Check data
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+# データ読み込み -----------------------------------------------------------------
+df_china <- 
+  read_dta("../Autor-Dorn-Hanson-ChinaSyndrome-FileArchive/dta/workfile_china.dta")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+All variables with the prefix “l_” refer to start-of-period values while variables with the prefix “d_” correspond to 10-year equivalent changes. This file is the basis for all Tables in the paper except Tables 1 and 2.
+
+```{r}
+# what are the variables?
+df_china |>
+  select(starts_with("d_")) |> 
+  names() |> 
+  str()
+
+# descriptive statistics
+df_china |> 
+  select(d_tradeusce_pw ) |> 
+  summary()
+
+# データの確認のため
+df_china |>
+  select(yr, d_tradeusce_pw) |>
+  group_by(yr) |>
+  summarise(mean = mean(d_tradeusce_pw))
+```
+
+## Replicate App Tab 1&2
+
+```{r}
+# App Table1 panel A
+df_china |>
+  group_by(yr) |>
+  dplyr::summarize(
+    w_10 = weighted.quantile(d_tradeusch_pw, timepwt48, prob = 0.10),
+    w_25 = weighted.quantile(d_tradeusch_pw, timepwt48, prob = 0.25),
+    w_50 = weighted.quantile(d_tradeusch_pw, timepwt48, prob = 0.5),
+    w_75 = weighted.quantile(d_tradeusch_pw, timepwt48, prob = 0.75),
+    w_90 = weighted.quantile(d_tradeusch_pw, timepwt48, prob = 0.9)
+  )
+```
+
+### App Table1 panel B
+
+```{r}
+# App Table1 panel B
+
+# Create a subset data for getting top 40 populated cities in 1990
+df_china_top40 <- df_china |>
+  select(yr, czone, city, d_tradeusch_pw, l_popcount) |> 
+  mutate(pop1990 = if_else(yr == 1990, l_popcount, 0)) |> 
+  arrange(desc(pop1990)) |> 
+  mutate(
+    pop40 = if_else(yr == 1990 & row_number() <= 40, 1, 0)
+  ) |> 
+  group_by(czone) |> 
+  mutate(top40 = sum(pop40)) |> # copying "1" for data in 2000
+  ungroup()
+
+  
+# App Table1 panel B
+
+# left-hand side (1990-2000)
+df_china_top40 |> 
+  filter(yr == 1990 & top40 == 1) |> 
+  select(city, d_tradeusch_pw) |>
+  arrange(desc(d_tradeusch_pw)) |>
+  print(n = 40)
+
+# right-hand side (2000-2007)
+df_china_top40 |> 
+  filter(yr == 2000 & top40 == 1) |> 
+  select(city, d_tradeusch_pw) |>
+  arrange(desc(d_tradeusch_pw)) |>
+  print(n = 40)
+```
+
+
+# Visualize data
+
+```{r}
+# データ読み込み -----------------------------------------------------------------
+df_china_long <- 
+  read_dta("../Autor-Dorn-Hanson-ChinaSyndrome-FileArchive/dta/workfile_china_long.dta")
+
+# descriptive statistics
+df_china_long |> 
+  summary()
+```
+
+
+## Get residuals 
+
+```{r}
+# fit our model for X
+x_fit <-
+  lm(d_tradeusch_pw ~ l_shind_manuf_cbp,
+     data = df_china_long,
+     weights = timepwt48)
+
+# save the residuals for X
+x_res <- resid(x_fit)
+length(x_res)
+
+# fit our model for Z
+z_fit <-
+  lm(d_tradeotch_pw_lag ~ l_shind_manuf_cbp,
+     data = df_china_long,
+     weights = timepwt48)
+
+# save the residuals for Z
+z_res <- resid(z_fit)
+length(z_res)
+
+# fit our model for y
+y_fit <-
+  lm(d_pct_manuf ~ l_shind_manuf_cbp,
+     data = df_china_long,
+     weights = timepwt48)
+
+# save the residuals for y
+y_res <- resid(y_fit)
+length(y_res)
+
+# incorporate residuals into our dataset
+df_china_long <- df_china_long |> 
+  mutate(x_res = x_res,
+         z_res = z_res,
+         y_res = y_res)
+summary(df_china_long)
+```
+
+
+## Run models
+
+### first stage regression
+
+```{r}
+#primitive ver.
+lm(d_tradeusch_pw ~ d_tradeotch_pw_lag + l_shind_manuf_cbp,
+   data = df_china_long
+   ) |> 
+  summary()
+```
+
+
+```{r}
+# weightをかけてみる
+df_china_long_w <- df_china_long |>
+  mutate(
+    d_tradeusch_pw_weighted = d_tradeusch_pw * timepwt48,
+    d_tradeotch_pw_lag_weighted = d_tradeotch_pw_lag * timepwt48,
+    l_shind_manuf_cbp_weighted = l_shind_manuf_cbp * timepwt48
+  )
+# turns out this was not necessary...
+```
+
+
+```{r}
+# regression
+model <- lm_robust(d_tradeusch_pw ~ d_tradeotch_pw_lag + l_shind_manuf_cbp,
+                   data = df_china_long,
+                   clusters = statefip,
+                   weights = timepwt48,
+                   se_type = "stata")
+
+# see the result
+model |> 
+  summary()
+
+# another approach
+model |> 
+  broom::tidy()
+```
+
+
+#### Make plot
+
+```{r, fig.cap = "Our first attempt"}
+# scatter plot
+df_china_long |> 
+  ggplot(aes(x = d_tradeotch_pw_lag, y = d_tradeusch_pw)) + 
+  geom_point() +
+  geom_smooth(method = "lm_robust") +
+  labs(title = "First stage regression, 1990-2007",
+       x = "Change in PREDICTED import exposure per worker (in kUSD)",
+       y = "Change in import exposure per worker (in kUSD)")
+```
+
+Is this good enough??? Probably not.
+
+```{r, fig.cap = "Panel A. 2SLS first stage regression, full sample"}
+# incorporate residuals into our dataset
+df_china_long <- df_china_long |> 
+  mutate(x_res = x_res,
+         z_res = z_res)
+summary(df_china_long)
+
+# scatter plot (revenge)
+df_china_long |> 
+  ggplot(aes(x = z_res, y = x_res)) + 
+  geom_point() +
+  geom_smooth(method = "lm",
+              mapping = aes(weight = timepwt48),
+              se = FALSE) +
+  labs(title = "First stage regression, 1990-2007",
+       x = "Change in PREDICTED import exposure per worker (in kUSD)",
+       y = "Change in import exposure per worker (in kUSD)")
+```
+
+Now it looks so good!
+
+
+### second stage regression
+
+```{r}
+# Run regression 
+lm_robust(d_pct_manuf ~ d_tradeotch_pw_lag + l_shind_manuf_cbp,
+                   data = df_china_long,
+                   clusters = statefip,
+                   weights = timepwt48,
+                   se_type = "stata") |> 
+  summary()
+```
+
+#### Make plot
+
+```{r, fig.cap = "Panel B. OLS reduced form regression, full sample"}
+# scatter plot
+df_china_long |> 
+  ggplot(aes(x = z_res, y = y_res)) + 
+  geom_point() +
+  geom_smooth(method = "lm",
+              mapping = aes(weight = timepwt48),
+              se = FALSE) +
+  labs(title = "Change in manufacturing emp by CZ, 1990-2007",
+       x = "Change in PREDICTED import exposure per worker (in kUSD)",
+       y = "Change % manufacturing emp in working-age pop")
+```
+
+
+# Replicate the main result (Tab 3)
+
+```{r}
+# データ読み込み -----------------------------------------------------------------
+df_china <- 
+  read_dta("../Autor-Dorn-Hanson-ChinaSyndrome-FileArchive/dta/workfile_china.dta")
+```
+
+
+## IV regression 
+
+What's the original code?
+
+ivregress 2sls d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) t2 [aw=timepwt48], cluster(statefip) first
+
+```{r}
+# do we have required variables?
+df_china |> 
+  select(d_sh_empl_mfg, d_tradeusch_pw, d_tradeotch_pw_lag, t2)
+```
+
+### Run 6 models
+
+1. eststo: ivregress 2sls d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) t2 [aw=timepwt48], cluster(statefip) first
+
+2. eststo: ivregress 2sls d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) l_shind_manuf_cbp t2 [aw=timepwt48], cluster(statefip) first
+
+3. eststo: ivregress 2sls d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) l_shind_manuf_cbp reg* t2 [aw=timepwt48], cluster(statefip) first
+
+4. eststo: ivregress 2sls d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) l_shind_manuf_cbp reg* l_sh_popedu_c l_sh_popfborn l_sh_empl_f t2 [aw=timepwt48], cluster(statefip) first
+
+5. eststo: ivregress 2sls d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) l_shind_manuf_cbp reg* l_sh_routine33 l_task_outsource t2 [aw=timepwt48], cluster(statefip) first
+
+6. eststo: ivregress 2sls d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) l_shind_manuf_cbp reg* l_sh_popedu_c l_sh_popfborn l_sh_empl_f l_sh_routine33 l_task_outsource t2 [aw=timepwt48], cluster(statefip) first
+
+
+Hereby we replicate Table 3. The results are:
+
+```{r}
+# model 1
+model1 <- 
+  iv_robust(
+    d_sh_empl_mfg ~ d_tradeusch_pw + t2 | d_tradeotch_pw_lag + t2,
+    data = df_china,
+    weights = timepwt48,
+    clusters = statefip,
+    se_type = "stata"
+  ) 
+summary(model1)
+```
+
+
+```{r}
+# model 2
+model2 <- 
+  iv_robust(
+    d_sh_empl_mfg ~ d_tradeusch_pw + l_shind_manuf_cbp + t2 | d_tradeotch_pw_lag + l_shind_manuf_cbp + t2,
+    data = df_china,
+    weights = timepwt48,
+    clusters = statefip,
+    se_type = "stata"
+  ) 
+summary(model2)
+```
+
+
+```{r}
+# model 3
+model3 <- 
+  iv_robust(
+    d_sh_empl_mfg ~ d_tradeusch_pw + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + t2 | 
+    d_tradeotch_pw_lag + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + t2,
+    data = df_china,
+    weights = timepwt48,
+    clusters = statefip,
+    se_type = "stata"
+  ) 
+summary(model3)
+```
+
+```{r}
+# model 4
+model4 <- 
+  iv_robust(
+    d_sh_empl_mfg ~ d_tradeusch_pw + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + l_sh_popedu_c + l_sh_popfborn + l_sh_empl_f + t2 | 
+    d_tradeotch_pw_lag + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + l_sh_popedu_c + l_sh_popfborn + l_sh_empl_f + t2,
+    data = df_china,
+    weights = timepwt48,
+    clusters = statefip,
+    se_type = "stata"
+  )  
+summary(model4)
+```
+
+```{r}
+# model 5
+model5 <- 
+  iv_robust(
+    d_sh_empl_mfg ~ d_tradeusch_pw + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + l_sh_routine33  + l_task_outsource + t2 | 
+    d_tradeotch_pw_lag + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + l_sh_routine33  + l_task_outsource + t2,
+    data = df_china,
+    weights = timepwt48,
+    clusters = statefip,
+    se_type = "stata"
+  ) 
+summary(model5)
+```
+
+```{r}
+# model 6
+model6 <- 
+  iv_robust(
+    d_sh_empl_mfg ~ d_tradeusch_pw + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + l_sh_popedu_c + l_sh_popfborn + l_sh_empl_f + l_sh_routine33 + l_task_outsource + t2 | 
+    d_tradeotch_pw_lag + l_shind_manuf_cbp + reg_midatl + reg_encen + reg_wncen + reg_satl + reg_escen + reg_wscen + reg_mount + reg_pacif + l_sh_popedu_c + l_sh_popfborn + l_sh_empl_f + l_sh_routine33  + l_task_outsource + t2,
+    data = df_china,
+    weights = timepwt48,
+    clusters = statefip,
+    se_type = "stata"
+  ) 
+summary(model6)
+```
